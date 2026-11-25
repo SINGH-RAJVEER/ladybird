@@ -3938,7 +3938,7 @@ WebIDL::ExceptionOr<GC::Ref<Event>> Document::create_event(Utf16FlyString const&
     // 2. If interface is an ASCII case-insensitive match for any of the strings in the first column in the following table,
     //      then set constructor to the interface in the second column on the same row as the matching string:
     if (interface.equals_ignoring_ascii_case("beforeunloadevent"sv)) {
-        event = HTML::BeforeUnloadEvent::create(Utf16FlyString {}, {}, time_stamp);
+        event = HTML::create_before_unload_event(realm);
     } else if (interface.equals_ignoring_ascii_case("compositionevent"sv)) {
         event = UIEvents::CompositionEvent::create(String {}, {}, time_stamp);
     } else if (interface.equals_ignoring_ascii_case("customevent"sv)) {
@@ -3955,7 +3955,7 @@ WebIDL::ExceptionOr<GC::Ref<Event>> Document::create_event(Utf16FlyString const&
     } else if (interface.equals_ignoring_ascii_case("focusevent"sv)) {
         event = UIEvents::FocusEvent::create(FlyString {}, {}, time_stamp);
     } else if (interface.equals_ignoring_ascii_case("hashchangeevent"sv)) {
-        event = HTML::HashChangeEvent::create(FlyString {}, {}, time_stamp);
+        event = HTML::create_hash_change_event(realm);
     } else if (interface.equals_ignoring_ascii_case("htmlevents"sv)) {
         event = Event::create(FlyString {}, time_stamp);
     } else if (interface.equals_ignoring_ascii_case("keyboardevent"sv)) {
@@ -4974,7 +4974,7 @@ void Document::scroll_to_the_beginning_of_the_document()
 {
     // FIXME: Actually implement this algorithm
     if (auto navigable = this->navigable())
-        navigable->perform_scroll_of_viewport_scrolling_box({ 0, 0 });
+        navigable->store_scroll_offset({ .node_id = unique_id(), .kind = Web::AsyncScrollNodeKind::Viewport }, { 0, 0 }, Painting::CompositorScrollRequest::ProgrammaticJump);
 }
 
 // https://html.spec.whatwg.org/multipage/dom.html#update-the-current-document-readiness
@@ -8294,10 +8294,7 @@ void Document::update_for_history_step_application(NonnullRefPtr<HTML::SessionHi
             // FIXME: Initialise hasUAVisualTransition
             auto& relevant_global_object = HTML::relevant_global_object(*this);
             auto& window = HTML::relevant_window(*this);
-            auto pop_state_event = HTML::PopStateEvent::create(
-                "popstate"_fly_string,
-                history()->state_value(),
-                HighResolutionTime::current_high_resolution_time(relevant_global_object));
+            auto pop_state_event = HTML::create_pop_state_event(HTML::relevant_realm(*this), HTML::EventNames::popstate, history()->state_value());
             window.dispatch_event(pop_state_event);
 
             // 4. Restore persisted state given entry.
@@ -8309,12 +8306,7 @@ void Document::update_for_history_step_application(NonnullRefPtr<HTML::SessionHi
             //    using HashChangeEvent, with the oldURL attribute initialized to the serialization of oldURL and the newURL attribute
             //    initialized to the serialization of entry's URL.
             if (old_url.fragment() != entry->url().fragment()) {
-                auto hashchange_event = HTML::HashChangeEvent::create(
-                    "hashchange"_fly_string,
-                    old_url.serialize(),
-                    entry->url().serialize(),
-                    HighResolutionTime::current_high_resolution_time(relevant_global_object));
-                hashchange_event->set_is_trusted(true);
+                auto hashchange_event = HTML::create_hash_change_event(HTML::relevant_realm(*this), HTML::EventNames::hashchange, old_url.serialize(), entry->url().serialize());
                 HTML::queue_global_task(HTML::Task::Source::DOMManipulation, relevant_global_object, GC::create_function(GC::Heap::the(), GC::captures(hashchange_event, window), [](auto& hashchange_event, auto& window) {
                     window.dispatch_event(hashchange_event);
                 }));
@@ -11555,8 +11547,7 @@ Document::StepsToFireBeforeunloadResult Document::steps_to_fire_beforeunload(boo
     // 4. Let eventFiringResult be the result of firing an event named beforeunload at document's relevant global object,
     //    using BeforeUnloadEvent, with the cancelable attribute initialized to true.
     auto& window = HTML::relevant_window(*this);
-    auto beforeunload_event = HTML::BeforeUnloadEvent::create(HTML::EventNames::beforeunload, {}, HighResolutionTime::current_high_resolution_time(relevant_global_object(*this)));
-    beforeunload_event->set_cancelable(true);
+    auto beforeunload_event = HTML::create_before_unload_event(HTML::relevant_realm(*this), HTML::EventNames::beforeunload, { .cancelable = true });
     auto event_firing_result = window.dispatch_event(*beforeunload_event);
 
     // 5. Decrease document's relevant agent's event loop's termination nesting level by 1.
@@ -11571,7 +11562,7 @@ Document::StepsToFireBeforeunloadResult Document::steps_to_fire_beforeunload(boo
         //    - document's relevant global object has sticky activation;
         && window.has_sticky_activation()
         //    - eventFiringResult is false, or the returnValue attribute of event is not the empty string; and
-        && (!event_firing_result || !beforeunload_event->return_value().is_empty())
+        && (!event_firing_result || !HTML::before_unload_event_return_value(*beforeunload_event)->is_empty())
         //    - showing an unload prompt is unlikely to be annoying, deceptive, or pointless,
         && showing_an_unload_prompt_is_unlikely_to_be_annoying_deceptive_or_pointless()) {
         // 1. Set unloadPromptShown to true.

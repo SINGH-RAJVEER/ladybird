@@ -45,6 +45,8 @@ pub trait ReplayPainter {
     fn canvas_matrix(&mut self) -> FloatMatrix4x4;
     fn set_matrix(&mut self, matrix: &FloatMatrix4x4);
     fn would_be_fully_clipped_by_painter(&mut self, rect: IntRect) -> bool;
+    /// The bounds of the area the clips leave the next draw, in the pixels of the canvas.
+    fn device_clip_bounds(&mut self) -> IntRect;
     fn push_clip(&mut self, clip: &ReplayClip);
     fn push_clip_path(&mut self, path: &Path, winding_rule: WindingRule);
     fn push_layer(&mut self, layer: &ReplayLayer);
@@ -113,17 +115,21 @@ pub fn scrollbar_shown_by_frame<'a>(
 pub struct ResolvedCompositedContext {
     pub surface: *mut std::ffi::c_void,
     pub content_rect: FloatRect,
+    /// The part of `content_rect` the surface holds, which is less than all of it where the frame was too large to
+    /// raster whole.
+    pub held_content_rect: FloatRect,
 }
 
 /// Where a replay finds the frames of the contexts the list draws.
 pub trait CompositedContexts {
-    /// The frame of the child context as it is drawn into `destination_rect` under `canvas_matrix`, none where the
-    /// context shows nothing there.
+    /// The frame of the child context as it is drawn into `destination_rect` under `canvas_matrix`, where the clips
+    /// leave it `visible_device_rect` of the canvas; none where the context shows nothing there.
     fn resolve(
         &self,
         child_context_id: u64,
         destination_rect: FloatRect,
         canvas_matrix: &FloatMatrix4x4,
+        visible_device_rect: IntRect,
     ) -> Option<ResolvedCompositedContext>;
 }
 
@@ -136,6 +142,7 @@ impl CompositedContexts for NoCompositedContexts {
         _child_context_id: u64,
         _destination_rect: FloatRect,
         _canvas_matrix: &FloatMatrix4x4,
+        _visible_device_rect: IntRect,
     ) -> Option<ResolvedCompositedContext> {
         None
     }
@@ -416,21 +423,32 @@ fn play_record_resolving_frame_state<'t, Painter: ReplayPainter + ?Sized>(
                 dst_rect.y = dst_rect.y.round();
             }
             let canvas_matrix = painter.canvas_matrix();
-            let Some(resolved_context) =
-                context
-                    .frame
-                    .composited_contexts
-                    .resolve(command.child_context_id.0, dst_rect, &canvas_matrix)
-            else {
+            let visible_device_rect = painter.device_clip_bounds();
+            let Some(resolved_context) = context.frame.composited_contexts.resolve(
+                command.child_context_id.0,
+                dst_rect,
+                &canvas_matrix,
+                visible_device_rect,
+            ) else {
                 return;
             };
-            if resolved_context.surface.is_null() || resolved_context.content_rect.is_empty() {
+            let (content_rect, held_rect) = (resolved_context.content_rect, resolved_context.held_content_rect);
+            if resolved_context.surface.is_null() || content_rect.is_empty() || held_rect.is_empty() {
                 return;
             }
+            // Only the part of the destination that shows the held part of the frame is drawn.
+            let horizontal_scale = dst_rect.width / content_rect.width;
+            let vertical_scale = dst_rect.height / content_rect.height;
+            let held_dst_rect = FloatRect::new(
+                dst_rect.x + (held_rect.x - content_rect.x) * horizontal_scale,
+                dst_rect.y + (held_rect.y - content_rect.y) * vertical_scale,
+                held_rect.width * horizontal_scale,
+                held_rect.height * vertical_scale,
+            );
             painter.draw_composited_context(&CompositedContextDraw {
                 surface: resolved_context.surface,
-                src_rect: resolved_context.content_rect,
-                dst_rect,
+                src_rect: held_rect,
+                dst_rect: held_dst_rect,
                 scaling_mode: command.scaling_mode,
             });
         }
@@ -1621,12 +1639,13 @@ impl<Painter: ReplayPainter + ?Sized> CompositingInsideEffects<'_, '_, Painter> 
         clips: CompositeClipsOfRaster<'_>,
         target_to_surface: Option<AffineTransform>,
     ) {
+        let filtered = target_to_surface.is_some() || !moves_by_whole_pixels_only(&self.canvas_matrix_of_raster_pixels);
         self.draw_at_raster_pixels_inside_innermost_effect(clips, target_to_surface, |painter| {
             painter.draw_surface(&SurfaceDraw {
                 surface,
                 source_rect,
                 target_rect,
-                filtered: target_to_surface.is_some(),
+                filtered,
             });
         });
     }
@@ -1691,6 +1710,10 @@ impl<Painter: ReplayPainter + ?Sized> CompositingInsideEffects<'_, '_, Painter> 
         self.return_to_innermost_entered_effect();
         self.driver.execute_record_span(span);
     }
+}
+
+fn moves_by_whole_pixels_only(matrix: &FloatMatrix4x4) -> bool {
+    matrix.is_2d_affine() && matrix.extract_2d_affine().is_whole_pixel_translation()
 }
 
 /// The clips a raster is composited within, in the pixels of the surface it is composited into: a rect, and rounded
@@ -1890,6 +1913,9 @@ mod tests {
         }
         fn would_be_fully_clipped_by_painter(&mut self, rect: IntRect) -> bool {
             rect.x == self.fully_clipped_x
+        }
+        fn device_clip_bounds(&mut self) -> IntRect {
+            IntRect::new(i32::MIN / 2, i32::MIN / 2, i32::MAX, i32::MAX)
         }
         fn push_clip(&mut self, clip: &ReplayClip) {
             self.events.push(PainterEvent::PushClip(clip.rect));
@@ -3531,5 +3557,13 @@ mod tests {
         assert!(plane_clip_pushes > 0);
         assert_eq!(depth, 0);
         assert_eq!(painter.events.last(), Some(&PainterEvent::SetMatrix(base)));
+    }
+
+    #[test]
+    fn rasters_drawn_at_a_fraction_of_a_pixel_or_scaled_are_filtered() {
+        assert!(moves_by_whole_pixels_only(&FloatMatrix4x4::identity()));
+        assert!(moves_by_whole_pixels_only(&translation_matrix(3.0, -4.0, 0.0)));
+        assert!(!moves_by_whole_pixels_only(&translation_matrix(0.5, 0.0, 0.0)));
+        assert!(!moves_by_whole_pixels_only(&scale_matrix(2.0, 2.0, 1.0)));
     }
 }
