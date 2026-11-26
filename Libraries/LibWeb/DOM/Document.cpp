@@ -783,7 +783,7 @@ bool Document::browsing_context_group_has_multiple_contexts() const
 
     size_t matching_navigable_count = 0;
     for (auto& candidate : HTML::all_local_navigables()) {
-        if (candidate->browsing_context_group_id() == group_id && ++matching_navigable_count > 1)
+        if (candidate.browsing_context_group_id() == group_id && ++matching_navigable_count > 1)
             return true;
     }
     return false;
@@ -1104,8 +1104,11 @@ void Document::visit_edges(Cell::Visitor& visitor)
 
     visitor.visit(m_potentially_named_elements);
     m_anchor_name_map.visit_edges(visitor);
-    if (m_query_selector_result_cache)
-        m_query_selector_result_cache->visit_edges(visitor);
+    visitor.visit(m_query_selector_result_cache);
+    if (m_layout_node_arena)
+        m_layout_node_arena->visit_edges(visitor);
+    if (m_paint_state)
+        m_paint_state->visit_edges(visitor);
     if (m_spelling_markers)
         m_spelling_markers->visit_edges(visitor);
     if (m_spell_check_controller)
@@ -3431,12 +3434,6 @@ static CSSPixelPoint hover_event_offset_for_target(Layout::BegunRead const& read
     return Painting::mouse_event_offset(*layout_node, hover_event_data->viewport_position);
 }
 
-static void mark_mouse_transition_event_as_trusted_if_needed(Event& event, Optional<HoverEventData> const& hover_event_data)
-{
-    if (hover_event_data.has_value())
-        event.set_is_trusted(true);
-}
-
 void Document::set_hovered_node(GC::Ptr<Node> node, Optional<HoverEventData> hover_event_data)
 {
     dispatch_boundary_events(m_hovered_node, node, hover_event_data, BoundaryEventTypes::All);
@@ -3528,7 +3525,6 @@ void Document::dispatch_boundary_events(GC::Ptr<Node> old_hovered_node, GC::Ptr<
             populate_mouse_event_options_from_hover_event_data(pointer_event_options, *hover_event_data, window_proxy);
         auto offset = *old_hovered_node_offset;
         auto event = create_pointer_event(UIEvents::EventNames::pointerout, move(pointer_event_options), offset);
-        mark_mouse_transition_event_as_trusted_if_needed(event, hover_event_data);
         old_hovered_node->dispatch_event(event);
     }
 
@@ -3544,7 +3540,6 @@ void Document::dispatch_boundary_events(GC::Ptr<Node> old_hovered_node, GC::Ptr<
             populate_mouse_event_options_from_hover_event_data(mouse_event_options, *hover_event_data, window_proxy);
         auto offset = *old_hovered_node_offset;
         auto event = create_mouse_event(UIEvents::EventNames::mouseout, mouse_event_options, offset);
-        mark_mouse_transition_event_as_trusted_if_needed(event, hover_event_data);
         old_hovered_node->dispatch_event(event);
     }
 
@@ -3560,7 +3555,6 @@ void Document::dispatch_boundary_events(GC::Ptr<Node> old_hovered_node, GC::Ptr<
                 populate_mouse_event_options_from_hover_event_data(pointer_event_options, *hover_event_data, window_proxy);
             auto offset = target.offset;
             auto event = create_pointer_event(UIEvents::EventNames::pointerleave, move(pointer_event_options), offset);
-            mark_mouse_transition_event_as_trusted_if_needed(event, hover_event_data);
             target.node->dispatch_event(event);
         }
     }
@@ -3574,7 +3568,6 @@ void Document::dispatch_boundary_events(GC::Ptr<Node> old_hovered_node, GC::Ptr<
                 populate_mouse_event_options_from_hover_event_data(mouse_event_options, *hover_event_data, window_proxy);
             auto offset = target.offset;
             auto event = create_mouse_event(UIEvents::EventNames::mouseleave, mouse_event_options, offset);
-            mark_mouse_transition_event_as_trusted_if_needed(event, hover_event_data);
             target.node->dispatch_event(event);
         }
     }
@@ -3593,7 +3586,6 @@ void Document::dispatch_boundary_events(GC::Ptr<Node> old_hovered_node, GC::Ptr<
             populate_mouse_event_options_from_hover_event_data(pointer_event_options, *hover_event_data, window_proxy);
         auto offset = *hovered_node_offset;
         auto event = create_pointer_event(UIEvents::EventNames::pointerover, move(pointer_event_options), offset);
-        mark_mouse_transition_event_as_trusted_if_needed(event, hover_event_data);
         node->dispatch_event(event);
     }
 
@@ -3609,7 +3601,6 @@ void Document::dispatch_boundary_events(GC::Ptr<Node> old_hovered_node, GC::Ptr<
             populate_mouse_event_options_from_hover_event_data(mouse_event_options, *hover_event_data, window_proxy);
         auto offset = *hovered_node_offset;
         auto event = create_mouse_event(UIEvents::EventNames::mouseover, mouse_event_options, offset);
-        mark_mouse_transition_event_as_trusted_if_needed(event, hover_event_data);
         node->dispatch_event(event);
     }
 
@@ -3629,7 +3620,6 @@ void Document::dispatch_boundary_events(GC::Ptr<Node> old_hovered_node, GC::Ptr<
                 if (hover_event_data.has_value())
                     populate_mouse_event_options_from_hover_event_data(pointer_event_options, *hover_event_data, window_proxy);
                 auto pointer_event = create_pointer_event(UIEvents::EventNames::pointerenter, move(pointer_event_options), offset);
-                mark_mouse_transition_event_as_trusted_if_needed(pointer_event, hover_event_data);
                 target.node->dispatch_event(pointer_event);
             }
             if (types != BoundaryEventTypes::Pointer) {
@@ -3638,7 +3628,6 @@ void Document::dispatch_boundary_events(GC::Ptr<Node> old_hovered_node, GC::Ptr<
                 if (hover_event_data.has_value())
                     populate_mouse_event_options_from_hover_event_data(mouse_event_options, *hover_event_data, window_proxy);
                 auto mouse_event = create_mouse_event(UIEvents::EventNames::mouseenter, mouse_event_options, offset);
-                mark_mouse_transition_event_as_trusted_if_needed(mouse_event, hover_event_data);
                 target.node->dispatch_event(mouse_event);
             }
         }
@@ -5514,7 +5503,6 @@ void Document::run_the_resize_steps()
             auto window_resize_event = DOM::Event::create(
                 UIEvents::EventNames::resize,
                 HighResolutionTime::current_high_resolution_time(relevant_global_object(*this)));
-            window_resize_event->set_is_trusted(true);
             window()->dispatch_event(window_resize_event);
         }
 
@@ -5522,7 +5510,6 @@ void Document::run_the_resize_steps()
             auto visual_viewport_resize_event = DOM::Event::create(
                 UIEvents::EventNames::resize,
                 HighResolutionTime::current_high_resolution_time(relevant_global_object(*this)));
-            visual_viewport_resize_event->set_is_trusted(true);
             visual_viewport.event_target()->dispatch_event(visual_viewport_resize_event);
         }
     }
@@ -5833,8 +5820,7 @@ void Document::detach_range(Badge<Range>, Range& range)
 
 void Document::register_document_observer(Badge<DocumentObserver>, DocumentObserver& document_observer)
 {
-    auto result = m_document_observers.set(document_observer);
-    VERIFY(result == AK::HashSetResult::InsertedNewEntry);
+    m_document_observers.set(document_observer);
 }
 
 void Document::unregister_document_observer(Badge<DocumentObserver>, DocumentObserver& document_observer)
@@ -12306,19 +12292,17 @@ RefPtr<SelectorQuery const> Document::selector_query_for(Utf16String const& sele
 QuerySelectorResultCache& Document::query_selector_result_cache()
 {
     if (!m_query_selector_result_cache)
-        m_query_selector_result_cache = make<QuerySelectorResultCache>();
+        m_query_selector_result_cache = heap().allocate<QuerySelectorResultCache>();
     return *m_query_selector_result_cache;
 }
 
 bool Document::tree_references_id_from_aria(Node const& root, Utf16FlyString const& id) const
 {
     auto dom_tree_version = root.dom_tree_version();
-    if (auto entry = m_ids_referenced_from_aria.get(&root); entry.has_value() && entry->root.ptr().ptr() == &root && entry->dom_tree_version == dom_tree_version)
+    if (auto entry = m_ids_referenced_from_aria.get(root); entry.has_value() && entry->dom_tree_version == dom_tree_version)
         return entry->ids.contains(id);
 
-    m_ids_referenced_from_aria.remove_all_matching([](auto const&, auto const& entry) { return !entry.root; });
-
-    IdsReferencedFromAria entry { root, dom_tree_version, {} };
+    IdsReferencedFromAria entry { dom_tree_version, {} };
     root.for_each_in_subtree_of_type<HTML::HTMLElement>([&](auto const& element) {
         for (auto& reference : element.parse_id_reference_list(element.aria_labelled_by()))
             entry.ids.set(Utf16FlyString { move(reference) });
@@ -12327,7 +12311,7 @@ bool Document::tree_references_id_from_aria(Node const& root, Utf16FlyString con
         return TraversalDecision::Continue;
     });
     auto is_referenced = entry.ids.contains(id);
-    m_ids_referenced_from_aria.set(&root, move(entry));
+    m_ids_referenced_from_aria.set(root, move(entry));
     return is_referenced;
 }
 

@@ -996,6 +996,10 @@ void WebContentPage::did_create_child_frame(Web::HTML::CrossProcessId parent_fra
 
     // 2. Let group be element's node document's browsing context's top-level browsing context's group.
     auto group = container_document->browsing_context().top_level_browsing_context().group();
+    // NB: A browsing context group switch takes the previous top-level browsing context out of its group as it commits,
+    //     so a frame reported afterwards in one of its documents comes too late, like one whose parent is gone.
+    if (!group)
+        return;
 
     // 3. Let browsingContext and document be the result of creating a new browsing context and document given element's node document, element, and group.
     auto document = CanonicalBrowsingContext::create_a_new_browsing_context_and_document(container_document.ptr(), hosted_state.container, *group, document_id, move(environment_id), move(origin)).document;
@@ -3491,6 +3495,12 @@ void WebContentPage::did_complete_close_preflight(u64 request_id, bool approved)
 {
     if (displays_tab())
         view().did_complete_close_preflight({}, request_id, approved);
+}
+
+void WebContentPage::did_show_validation_message(Web::HTML::CrossProcessId local_root_id, Gfx::IntPoint position, Utf16String message)
+{
+    if (auto target = view_position(local_root_id, position); target.has_value() && target->view.on_show_validation_message)
+        target->view.on_show_validation_message(target->view.to_widget_position(target->position), move(message));
 }
 
 void WebContentPage::did_request_select_dropdown(Web::HTML::CrossProcessId local_root_id, Gfx::IntPoint content_position, i32 minimum_width, Vector<Web::HTML::SelectItem> items)

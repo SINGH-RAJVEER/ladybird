@@ -94,6 +94,7 @@ set(TEST_SOURCES
     TestPictureInPictureWindow.cpp
     TestPlatformFeatures.cpp
     TestProfile.cpp
+    TestScrollbarSettings.cpp
     TestSessionHistory.cpp
     TestSessionHistoryTraversalQueue.cpp
     TestSiteCompatibilityDataLoading.cpp
@@ -154,12 +155,14 @@ if (NOT WIN32)
         TestAutocomplete.cpp
         TestBeforeUnload.cpp
         TestBrowserHistoryTraversal.cpp
+        TestChildFrameReports.cpp
         TestCompositorStartup.cpp
         TestCrashOverlay.cpp
         TestCrashReportSubmission.cpp
         TestFavicon.cpp
         TestFileDownloader.cpp
         TestFocusWithoutSystemFocus.cpp
+        TestFormValidationMessage.cpp
         TestGamepadExposure.cpp
         TestImageDecoderIsolation.cpp
         TestInputMethodState.cpp
@@ -178,6 +181,7 @@ if (NOT WIN32)
         TestRendererViolationReports.cpp
         TestRequestServerClientSessions.cpp
         TestRequestServerDiskCaches.cpp
+        TestRequestServerRelaunchFailure.cpp
         TestShadowTreeTooltipsAndLinks.cpp
         TestSharedWorkerHost.cpp
         TestSpareWebContentProcess.cpp
